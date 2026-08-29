@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from app.models import DocumentChunk
@@ -51,18 +53,57 @@ class EmbeddingCache:
             "embeddings": embeddings,
         }
 
-        with self.path.open(
-            "w",
-            encoding="utf-8",
-        ) as file:
-            json.dump(payload, file)
+        temp_path: str | None = None
+
+        try:
+            # Create the temporary file in the SAME directory so
+            # os.replace remains atomic on the same filesystem.
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.path.parent,
+                delete=False,
+                suffix=".tmp",
+            ) as temp_file:
+                temp_path = temp_file.name
+
+                json.dump(
+                    payload,
+                    temp_file,
+                    ensure_ascii=False,
+                )
+
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+
+            # Atomic replacement prevents readers from seeing a
+            # partially-written cache file.
+            os.replace(
+                temp_path,
+                self.path,
+            )
+
+            temp_path = None
+
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
 
     def load(self) -> dict | None:
         if not self.exists():
             return None
 
-        with self.path.open(
-            "r",
-            encoding="utf-8",
-        ) as file:
-            return json.load(file)
+        try:
+            with self.path.open(
+                "r",
+                encoding="utf-8",
+            ) as file:
+                return json.load(file)
+
+        except (
+            json.JSONDecodeError,
+            OSError,
+        ):
+            # Invalid/stale cache should never prevent application
+            # startup. The indexer will simply regenerate embeddings.
+            return None

@@ -1,0 +1,57 @@
+services:
+  backend:
+    build:
+      context: ./backend
+
+    environment:
+      AI_MODE: ${AI_MODE:-auto}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4o-mini}
+
+      TOP_K: ${TOP_K:-3}
+
+      LOCAL_SIMILARITY_THRESHOLD: ${LOCAL_SIMILARITY_THRESHOLD:-0.12}
+      OPENAI_SIMILARITY_THRESHOLD: ${OPENAI_SIMILARITY_THRESHOLD:-0.30}
+
+      MAX_QUERY_LENGTH: ${MAX_QUERY_LENGTH:-2000}
+      MAX_CONTEXT_CHARS: ${MAX_CONTEXT_CHARS:-12000}
+
+      EMBEDDING_CACHE_DIR: data/embeddings
+
+      FRONTEND_ORIGINS: http://localhost:3000,http://localhost:5173
+
+    ports:
+      - "8000:8000"
+
+    volumes:
+      - embedding_cache:/app/data/embeddings
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+
+    ports:
+      - "3000:80"
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+
+volumes:
+  embedding_cache:

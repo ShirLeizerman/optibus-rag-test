@@ -1,0 +1,22 @@
+[
+  {
+    "query": "What is expected to happen to Route 1 morning ridership?",
+    "expected_document_id": "planning_1"
+  },
+  {
+    "query": "Which bus requires a brake inspection?",
+    "expected_document_id": "ops_2"
+  },
+  {
+    "query": "What is the continuous driving limit for night routes?",
+    "expected_document_id": "scheduling_4"
+  },
+  {
+    "query": "Where will downtown routes be diverted during the city marathon?",
+    "expected_document_id": "ops_4"
+  },
+  {
+    "query": "What does the fuel shortage alert say about Friday morning?",
+    "expected_document_id": "ops_5"
+  }
+]

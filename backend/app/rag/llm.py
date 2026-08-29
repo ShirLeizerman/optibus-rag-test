@@ -1,7 +1,17 @@
+import re
+
 from openai import OpenAI
+
+from app.rag.embeddings import tokenize_for_matching
 
 
 class LLMService:
+    """
+    Real OpenAI answer generation service.
+    """
+
+    provider = "openai"
+
     def __init__(
         self,
         api_key: str,
@@ -11,6 +21,7 @@ class LLMService:
             api_key=api_key,
             timeout=30.0,
         )
+
         self.model = model
 
     def generate(
@@ -27,20 +38,35 @@ class LLMService:
         return response.output_text.strip()
 
 
-class MockLLMService:
-    model = "mock-llm-v1"
+class LocalExtractiveLLMService:
+    """
+    Fully offline answer provider.
+
+    Instead of pretending to be an LLM, this implementation performs
+    grounded extractive answering from the retrieved RAG context.
+
+    This keeps the pipeline functional without OpenAI while clearly
+    distinguishing offline extractive answers from real LLM synthesis.
+    """
+
+    provider = "local"
+    model = "local-extractive-v1"
 
     def generate(
         self,
         system_prompt: str,
         user_prompt: str,
     ) -> str:
-        context = self._extract_context(
-            user_prompt
+        del system_prompt
+
+        context = self._extract_block(
+            user_prompt,
+            "context",
         )
 
-        question = self._extract_question(
-            user_prompt
+        question = self._extract_block(
+            user_prompt,
+            "question",
         )
 
         if not context.strip():
@@ -50,23 +76,62 @@ class MockLLMService:
                 "this question."
             )
 
-        first_document = self._extract_first_document(
-            context
+        clean_context = self._remove_metadata(context)
+
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(
+                r"(?<=[.!?])\s+",
+                clean_context,
+            )
+            if sentence.strip()
+        ]
+
+        if not sentences:
+            return (
+                "I don't have enough information "
+                "in the provided documents to answer "
+                "this question."
+            )
+
+        question_tokens = set(
+            tokenize_for_matching(question)
+        )
+
+        def score(sentence: str) -> tuple[int, float]:
+            sentence_tokens = set(
+                tokenize_for_matching(sentence)
+            )
+
+            overlap = len(
+                question_tokens.intersection(
+                    sentence_tokens
+                )
+            )
+
+            # Prefer focused sentences when overlap is equal.
+            length_penalty = len(sentence) / 1000
+
+            return overlap, -length_penalty
+
+        best_sentence = max(
+            sentences,
+            key=score,
         )
 
         return (
-            "Mock answer generated without OpenAI.\n\n"
-            f"Question: {question}\n\n"
-            "Based on the retrieved context:\n"
-            f"{first_document}"
+            "Offline extractive answer "
+            "(OpenAI is not enabled):\n\n"
+            f"{best_sentence}"
         )
 
     @staticmethod
-    def _extract_context(
+    def _extract_block(
         prompt: str,
+        tag: str,
     ) -> str:
-        start_marker = "<context>"
-        end_marker = "</context>"
+        start_marker = f"<{tag}>"
+        end_marker = f"</{tag}>"
 
         start = prompt.find(start_marker)
         end = prompt.find(end_marker)
@@ -79,33 +144,21 @@ class MockLLMService:
         return prompt[start:end].strip()
 
     @staticmethod
-    def _extract_question(
-        prompt: str,
-    ) -> str:
-        start_marker = "<question>"
-        end_marker = "</question>"
+    def _remove_metadata(context: str) -> str:
+        lines = []
 
-        start = prompt.find(start_marker)
-        end = prompt.find(end_marker)
+        for line in context.splitlines():
+            stripped = line.strip()
 
-        if start == -1 or end == -1:
-            return ""
+            if not stripped:
+                continue
 
-        start += len(start_marker)
+            if (
+                stripped.startswith("[Document ID:")
+                or stripped.startswith("[Module:")
+            ):
+                continue
 
-        return prompt[start:end].strip()
+            lines.append(stripped)
 
-    @staticmethod
-    def _extract_first_document(
-        context: str,
-    ) -> str:
-        documents = context.split(
-            "[Document ID:"
-        )
-
-        if len(documents) < 2:
-            return context
-
-        first = documents[1]
-
-        return "[Document ID:" + first.strip()
+        return " ".join(lines)

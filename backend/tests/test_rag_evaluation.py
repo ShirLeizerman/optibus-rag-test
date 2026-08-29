@@ -1,38 +1,115 @@
 import json
 from pathlib import Path
 
-from app.models import DocumentChunk
+from app.rag.chunker import chunk_document
+from app.rag.embeddings import (
+    LocalHashEmbeddingService,
+)
 from app.rag.retriever import Retriever
+from app.repositories.documents import (
+    DocumentRepository,
+)
 from app.repositories.vector_store import (
     InMemoryVectorStore,
 )
 
 
-class FakeEmbeddingService:
-    model = "fake"
+BACKEND_DIR = Path(__file__).resolve().parents[1]
 
-    def embed(self, text: str) -> list[float]:
-        text = text.lower()
+EVALUATION_FILE = (
+    Path(__file__).resolve().parent
+    / "evaluation_cases.json"
+)
 
-        if "ridership" in text or "route 1" in text:
-            return [1.0, 0.0, 0.0]
-
-        if "brake" in text or "bus 215" in text:
-            return [0.0, 1.0, 0.0]
-
-        if "night" in text or "six hours" in text:
-            return [0.0, 0.0, 1.0]
-
-        return [0.5, 0.5, 0.5]
+DOCUMENTS_FILE = (
+    BACKEND_DIR
+    / "data"
+    / "documents.json"
+)
 
 
-def test_evaluation_file_exists():
-    path = Path("tests/evaluation_cases.json")
-
-    assert path.exists()
-
-    data = json.loads(
-        path.read_text(encoding="utf-8")
+def load_evaluation_cases() -> list[dict]:
+    return json.loads(
+        EVALUATION_FILE.read_text(
+            encoding="utf-8"
+        )
     )
 
-    assert len(data) == 5
+
+def create_offline_retriever() -> Retriever:
+    embedding_service = (
+        LocalHashEmbeddingService()
+    )
+
+    vector_store = InMemoryVectorStore()
+
+    repository = DocumentRepository(
+        str(DOCUMENTS_FILE)
+    )
+
+    for document in repository.get_all():
+        for chunk in chunk_document(document):
+            vector_store.add(
+                chunk,
+                embedding_service.embed(
+                    chunk.text
+                ),
+            )
+
+    return Retriever(
+        embedding_service=embedding_service,
+        vector_store=vector_store,
+        top_k=3,
+
+        # Evaluation focuses on ranking/recall@3.
+        # Threshold filtering is evaluated by the application layer.
+        similarity_threshold=-1.0,
+    )
+
+
+def test_evaluation_file_has_five_cases():
+    cases = load_evaluation_cases()
+
+    assert len(cases) == 5
+
+
+def test_offline_embedding_is_deterministic():
+    service = LocalHashEmbeddingService()
+
+    first = service.embed(
+        "Bus 215 requires brake inspection"
+    )
+
+    second = service.embed(
+        "Bus 215 requires brake inspection"
+    )
+
+    assert first == second
+
+
+def test_retrieval_recall_at_3():
+    cases = load_evaluation_cases()
+
+    retriever = create_offline_retriever()
+
+    hits = 0
+
+    for case in cases:
+        results = retriever.retrieve(
+            case["query"]
+        )
+
+        retrieved_ids = {
+            item.document_id
+            for item in results
+        }
+
+        if (
+            case["expected_document_id"]
+            in retrieved_ids
+        ):
+            hits += 1
+
+    recall_at_3 = hits / len(cases)
+
+    assert recall_at_3 >= 0.8
